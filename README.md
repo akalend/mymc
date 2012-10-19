@@ -1,0 +1,1 @@
+The example key/value storage, based on the memecached protocol.
