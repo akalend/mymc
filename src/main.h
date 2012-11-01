@@ -1,3 +1,8 @@
+#ifndef __mymc_main__
+#define __mymc_main__
+#endif
+#ifdef __mymc_main__
+
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -37,5 +42,18 @@
 
 #define MAX_COMMAND_LEN		128
 
+#define LK_STORAGE_FILENAME  "storage.tch"
+#define LK_STORAGE_FILENAME_LEN  sizeof(LK_STORAGE_FILENAME)
+
+
+#define LK_KEYSIZE sizeof(lk_key)
+#define LK_LIKESIZE sizeof(unsigned)
+
+// typedef struct {
+// 	unsigned data;
+// 	unsigned crc;	
+// } lk_data;
+
 void perror_fatal(const char *what);
 
+#endif

@@ -3,8 +3,9 @@
 #endif
 #ifdef __likes_mch__
 
-
 #include "main.h"
+#include <sys/socket.h>
+#include <ev.h>
 
 #define set_client_timeout(io,t_o) clients[(io)->fd].timeout = ev_now(EV_A) + t_o
 #define reset_client_timeout(io) clients[(io)->fd].timeout = 0
@@ -27,6 +28,17 @@
 
 
 typedef void (*cleanup_proc)(ev_io *data);
+
+
+typedef struct {
+	TCHDB *			hdb;
+	TCHDB *			hdb_counter;
+	int 			ecode;
+	unsigned * 		key;	
+	int * 			types;
+	void *	conf;
+	int 			type;
+} likes_ctx;
 
 
 typedef struct {
@@ -67,19 +79,18 @@ typedef struct {
 } addr_t;
 
 typedef struct {
-	ev_io	io;							/**< io descriptor */
-	char	cmd[MAX_COMMAND_LEN];		/**< buffer for line-buffered input */
-	int		cmd_len;					/**< bytes in line buffer */
-	struct obuffer response;			/**< response data */
-	char	*value;						/**< key value from last set command */
-	int		value_len;					/**< number of bytes in value buffer */
-	int		value_size;					/**< capacity of value buffer */	
-	int		free_value;					/**< response value needs to be freed */
-	int		data_size;					/**< value   size into cmd */	
+	ev_io		io;							/**< io descriptor */
+	char		cmd[MAX_COMMAND_LEN];		/**< buffer for line-buffered input */
+	int			cmd_len;					/**< bytes in line buffer */
+	struct		obuffer response;			/**< response data */
+	char		*value;						/**< key value from last set command */
+	int			value_len;					/**< number of bytes in value buffer */
+	int			value_size;					/**< capacity of value buffer */	
+	int			free_value;					/**< response value needs to be freed */
+	int			data_size;					/**< value   size into cmd */	
 	unsigned	flag;					/**< request flag read */
 	unsigned	exptime;					/**< request expire read */
-	unsigned	prefix;					/**< request key prefix read */
-	unsigned	crc;					/**< request key(crc) read */
+	char*		key;					/**< request key read */
 	int 		mode;
 } memcache_ctx;
 

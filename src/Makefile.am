@@ -8,7 +8,6 @@ INCLUDES =  -I$(shared_srcdir)/include -I/usr/include -I/usr/local/include -DPRE
 mymc_SOURCES = main.c \
 		ini.c \
 		config.c \
-		init.c \
 		mc.c \
 		io_buffer.c 
 		

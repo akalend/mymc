@@ -1,25 +1,12 @@
 #include "main.h"
-#include "init.h"
-#include "mc.h"
 #include "ini.h"
-/*
-[daemon] logfile=/home/akalendarev/trunk/src/xxx/src/error2.log;
-[daemon] level=error;
-[daemon] trace=1;
-[daemon] listen=12313;
-[daemon] daemon=0;
-[daemon] username=any;
-[daemon] pidfile=/tmp/server.pid;
-[daemon] datadir=/home/akalendarev/var/data/;
-*/
+#include "mc.h"
+
 extern void parse(const char* fname, server_ctx_t *server_ctx);
 
 int dumper(void* pctx, const char* section, const char* name,
-           const char* value)
-{
+           const char* value) {
 	server_ctx_t* ctx = (server_ctx_t*) pctx;
-	static datatype_t *p = NULL;
-	datatype_t *tmp = NULL;
 	int tmp_int = 0;
 	
     if (strcmp(section, "daemon") == 0) {
@@ -65,7 +52,8 @@ int dumper(void* pctx, const char* section, const char* name,
 		}
 
 	}
-
+	
+	return 0;
 }
 
 void parse(const char* fname, server_ctx_t *server_ctx) {

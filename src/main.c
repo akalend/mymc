@@ -1,6 +1,6 @@
 #include "main.h"
 #include "mc.h"
-#include "init.h"
+#include "ini.h"
 
 #include <sys/time.h>
 #include <libgen.h>
@@ -31,9 +31,10 @@ struct timeval t_start; 				// start timeinterval
 struct timeval t_end;					// finish timeinterval
 
 
+
 struct {
 	/* some stat data */
-	unsigned	connectionss;				//  active connectionss (memcache clients) 
+	unsigned	connections;				//  active connections (memcache clients) 
 	unsigned	cnn_count;				//  count connectionss 
 	unsigned	cmd_per;					//  count of commands into period	
 	unsigned	cmd_count;					//  count of commands
@@ -72,6 +73,80 @@ void perror_fatal(const char *what)
 	perror(what);
 	exit(EXIT_FAILURE);
 }
+
+likes_ctx* init(void * conf) {
+	
+	likes_ctx * ctx = (likes_ctx*) malloc(sizeof(likes_ctx));	
+	if (!ctx) {
+		printf("error alloc size=%lu\n", sizeof(likes_ctx));
+		exit(1);
+	}
+	
+	assert(ctx);	
+	
+	ctx->conf = conf;
+	server_ctx_t * pconf = (server_ctx_t *)conf;
+
+	ctx->hdb = tchdbnew();
+	assert(ctx->hdb);
+	
+	pconf->datadir = strdup("data");
+	
+	int32_t rcnum = LIKE_CACHESIZE; // 16M
+	tchdbsetcache(ctx->hdb, rcnum);
+	{
+
+		// number of elements of the bucket array. If it is not more than 0, the default value is specified. The default value is 131071.
+		int64_t bnum =  pconf->index_bucket;  //4194272; //131071;// 134216704;
+		// specifies the size of record,  The default value is 4 standing for 2^4=16.
+		int8_t apow = 1024; // 2^10=1024 ?? (int8_t)pconf->recsize
+		// сжатие
+		uint8_t opts = HDBTLARGE;
+		// specifies the maximum number of elements of the free block pool by power of 2.
+		int8_t fpow = 10; // 2^10=1024
+		//filesize 536M  for bnum = 134 216704
+		
+		if (!tchdbtune(ctx->hdb, bnum, apow, fpow, opts)) {
+			ctx->ecode = tchdbecode(ctx->hdb);
+			fprintf(flog, "tune %s error: %s\n", LK_STORAGE_FILENAME,tchdberrmsg(ctx->ecode));
+			free(ctx);
+			return NULL;
+		}
+
+		int len =  LK_STORAGE_FILENAME_LEN + strlen(pconf->datadir);	
+		char* filename = malloc(len);
+		strcpy(filename, pconf->datadir);
+		strcpy(filename+strlen(pconf->datadir), LK_STORAGE_FILENAME);
+				
+		if(!tchdbopen(ctx->hdb, filename, HDBOWRITER| HDBOREADER | HDBOCREAT| HDBONOLCK )) {
+			ctx->ecode = tchdbecode(ctx->hdb);
+			fprintf(flog, "open datafile %s error: %s\n", filename, tchdberrmsg(ctx->ecode));
+			free(ctx);
+			return NULL;
+		}
+	}	
+
+	return ctx;
+}
+
+
+void destroy(likes_ctx* ctx) {
+  assert(ctx);
+  assert(ctx->hdb);
+  assert(ctx->types);
+  ctx->ecode=0;
+
+  if(!tchdbclose(ctx->hdb)){
+		ctx->ecode = tchdbecode(ctx->hdb);
+		fprintf(flog, "%s close %s error: %s\n", __FUNCTION__, LK_STORAGE_FILENAME,tchdberrmsg(ctx->ecode));
+	}
+
+	tchdbdel(ctx->hdb);
+
+	free(ctx);
+ }
+
+
 
 void free_config() {
 
@@ -201,7 +276,7 @@ set_nonblock(int sock,int value)
 
 	is_finish = 1;
 	if (!max_clients) ev_unloop (loop, EVUNLOOP_ALL);
-	if (!stats.connectionss) ev_unloop (loop, EVUNLOOP_ONE);
+	if (!stats.connections) ev_unloop (loop, EVUNLOOP_ONE);
 
 	is_finish = 0;
 
@@ -236,10 +311,10 @@ set_nonblock(int sock,int value)
   static void
   sigint_cb (struct ev_loop *loop, struct ev_signal *w, int revents)
   {
-  //  printf("recv signal SIGINT  cnn=%d\n", stats.connectionss);	
+  //  printf("recv signal SIGINT  cnn=%d\n", stats.connections);	
 	is_finish = 1;
 
-	if (!stats.connectionss) {
+	if (!stats.connections) {
 //		printf("cnn = 0\n");
 		ev_unloop (loop, EVUNLOOP_ALL);
 		return;
@@ -419,7 +494,7 @@ int main(int argc, char **argv){
 		i++;
 	}
 	
-	like_ctx = likes_init(&server_ctx);
+	like_ctx = init(&server_ctx);
 	assert(like_ctx);
 	
 	struct ev_loop *loop = ev_default_loop(0);	
@@ -463,7 +538,7 @@ int main(int argc, char **argv){
 	
 	//ev_loop_destroy(loop);
 	
-	likes_destroy(like_ctx);
+	destroy(like_ctx);
 	
 	if (mc_addr.a_addr) free(mc_addr.a_addr);
 	
