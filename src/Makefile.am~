@@ -12,8 +12,8 @@ mymc_SOURCES = main.c \
 		io_buffer.c 
 		
 
-mymc_LDFLAGS = -pthread -L/usr/lib -L/usr/local/lib  -L/lib/x86_64-linux-gnu/ 
-mymc_LDADD = -lresolv -lsophia -ldl -lpthread -lm -lc -lev
+mymc_LDFLAGS = -L/usr/lib -L/usr/local/lib  -L/lib/x86_64-linux-gnu/ 
+mymc_LDADD = -pthread -ltokyocabinet -lz -lbz2 -lresolv  -ldl  -lpthread -lm -lc -lev
 
 install-conf: install
 	echo -------------------------------------------------

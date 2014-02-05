@@ -1,6 +1,13 @@
+/*
+выпилить лог, заменить на суслог
+
+
+*/
 #include "main.h"
 #include "mc.h"
 #include "ini.h"
+
+#include <sophia.h>
 
 #include <sys/time.h>
 #include <libgen.h>
@@ -15,10 +22,33 @@
 #define MYMC_VERSION "1.0"
 
 extern void 
-parse(const char* fname, server_ctx_t *server_ctx);
+parse(const char* fname, conf_t *server_ctx);
+
+static inline int
+cmp32(char *a, size_t asz, char *b, size_t bsz, void *arg) {
+	register uint32_t av = *(uint32_t*)a;
+	register uint32_t bv = *(uint32_t*)b;
+	if (av == bv)
+		return 0;
+	return (av > bv) ? 1 : -1;
+}
+
+static inline int
+cmp64(char *a, size_t asz, char *b, size_t bsz, void *arg) {
+	register uint64_t av = *(uint64_t*)a;
+	register uint64_t bv = *(uint64_t*)b;
+	if (av == bv)
+		return 0;
+	return (av > bv) ? 1 : -1;
+}
+
+static inline int
+cmp0(char *a, size_t asz, char *b, size_t bsz, void *arg) {
+	return 0;
+}
 
 static const char *listen_addr;
-server_ctx_t server_ctx;
+conf_t server_ctx;
 const char *confilename = NULL;
 
 FILE 			*flog = NULL;
@@ -74,74 +104,110 @@ void perror_fatal(const char *what)
 	exit(EXIT_FAILURE);
 }
 
-likes_ctx* init(void * conf) {
+sophiadb_t* db_init(void * conf) {
 	
-	likes_ctx * ctx = (likes_ctx*) malloc(sizeof(likes_ctx));	
-	if (!ctx) {
-		printf("error alloc size=%lu\n", sizeof(likes_ctx));
+	conf_t * pconf = (conf_t *)conf;
+	printf("size of datatype = %d\n",pconf->max_num);
+
+	sophiadb_t* db = (sophiadb_t*) calloc(pconf->max_num, sizeof(sophiadb_t));	
+	if (!db) {
+		printf("error alloc size=%lu\n", sizeof(sophiadb_t));
 		exit(1);
 	}
 	
-	assert(ctx);	
-	
-	ctx->conf = conf;
-	server_ctx_t * pconf = (server_ctx_t *)conf;
+	assert(db);	
 
-	ctx->hdb = tchdbnew();
-	assert(ctx->hdb);
+	datatype_t * p = (datatype_t *)pconf->list_datatypes;	
 	
-	pconf->datadir = strdup("data");
-	
-	int32_t rcnum = LIKE_CACHESIZE; // 16M
-	tchdbsetcache(ctx->hdb, rcnum);
-	{
+	spcmpf fcmp ;
 
-		// number of elements of the bucket array. If it is not more than 0, the default value is specified. The default value is 131071.
-		int64_t bnum =  pconf->index_bucket;  //4194272; //131071;// 134216704;
-		// specifies the size of record,  The default value is 4 standing for 2^4=16.
-		int8_t apow = 1024; // 2^10=1024 ?? (int8_t)pconf->recsize
-		// сжатие
-		uint8_t opts = HDBTLARGE;
-		// specifies the maximum number of elements of the free block pool by power of 2.
-		int8_t fpow = 10; // 2^10=1024
-		//filesize 536M  for bnum = 134 216704
+	while(p) {
+		fcmp = cmp0;
+
+		if (p->number <= 0) {
+			printf("error config parametr: number=%d \n", p->number );
+			free(db);
+			return NULL;
+		}
+
+		db[p->number-1].type = p->type;
+		db[p->number-1].datadir = p->datadir;
+
+		switch (p->type) {
+			case SPHDB_INT :
+				db[p->number-1].datalen = sizeof(int32_t);
+				fcmp = cmp32;
+				break;
 		
-		if (!tchdbtune(ctx->hdb, bnum, apow, fpow, opts)) {
-			ctx->ecode = tchdbecode(ctx->hdb);
-			fprintf(flog, "tune %s error: %s\n", LK_STORAGE_FILENAME,tchdberrmsg(ctx->ecode));
-			free(ctx);
-			return NULL;
+			case SPHDB_LONG : 
+				db[p->number-1].datalen = sizeof(int64_t);
+				fcmp = cmp64;
+				break;
+
+			case SPHDB_STRING :	
+				db[p->number-1].datalen = SPHDB_STRLEN;
+				break;
+
+			default:
+				printf("error: undefined config datatype\n");
+				free(db);
+				exit(1);
 		}
 
-		int len =  LK_STORAGE_FILENAME_LEN + strlen(pconf->datadir);	
-		char* filename = malloc(len);
-		strcpy(filename, pconf->datadir);
-		strcpy(filename+strlen(pconf->datadir), LK_STORAGE_FILENAME);
-				
-		if(!tchdbopen(ctx->hdb, filename, HDBOWRITER| HDBOREADER | HDBOCREAT| HDBONOLCK )) {
-			ctx->ecode = tchdbecode(ctx->hdb);
-			fprintf(flog, "open datafile %s error: %s\n", filename, tchdberrmsg(ctx->ecode));
-			free(ctx);
-			return NULL;
-		}
-	}	
+	printf("fcmp: fcmp=%x\n", fcmp);
 
-	return ctx;
+		db[p->number-1].env = sp_env();
+		if (db[p->number-1].env == NULL) {
+			/* memory allocation error */
+			printf("env error\n");
+			free(db);
+			exit(1);
+		}
+
+		int rc = sp_ctl(db[p->number-1].env, SPDIR, SPO_CREAT|SPO_RDWR, p->datadir);
+		if (rc == -1) {
+			/* memory allocation error */
+			printf("error: %s\n", sp_error(db[p->number-1].env));
+			sp_destroy(db[p->number-1].env);
+			free(db);
+			exit(1);
+		}
+
+		if (fcmp != cmp0) {	
+			printf("%s type=%d %x\n", p->datadir, p->type , fcmp);
+			rc = sp_ctl(db[p->number-1].env, SPCMP, fcmp, NULL); 
+			if (rc == -1) {
+				/* memory allocation error */
+				printf("error: %s\n", sp_error(db[p->number-1].env));
+				sp_destroy(db[p->number-1].env);
+				free(db);
+				exit(1);
+			}
+		}
+
+		db[p->number-1].db = sp_open(db[p->number-1].env);
+		if (db[p->number-1].db == NULL) {
+		    printf("sp_open: %s\n", sp_error(db[p->number-1].env));
+		    sp_destroy(db[p->number-1].env);
+		    exit(1);
+		}
+
+	 	p = p->next;
+	}
+
+
+	printf("db is open %s\n", pconf->datadir );
+
+
+	return db;
 }
 
 
-void destroy(likes_ctx* ctx) {
-  assert(ctx);
-  assert(ctx->hdb);
-  assert(ctx->types);
-  ctx->ecode=0;
+void destroy(sophiadb_t* ctx) {
+	assert(ctx);
 
-  if(!tchdbclose(ctx->hdb)){
-		ctx->ecode = tchdbecode(ctx->hdb);
-		fprintf(flog, "%s close %s error: %s\n", __FUNCTION__, LK_STORAGE_FILENAME,tchdberrmsg(ctx->ecode));
-	}
-
-	tchdbdel(ctx->hdb);
+	sp_destroy(ctx->db);
+	sp_destroy(ctx->env);
 
 	free(ctx);
  }
@@ -280,7 +346,7 @@ set_nonblock(int sock,int value)
 
 	is_finish = 0;
 
-	likes_ctx* ctx = ev_userdata(EV_A);	
+	sophiadb_t* ctx = ev_userdata(EV_A);	
 
 	free_config();
 
@@ -290,14 +356,16 @@ set_nonblock(int sock,int value)
 		parse("config.ini", &server_ctx);
 
 
-	ctx->types = malloc((server_ctx.max_num+1) * sizeof(int));
-	ctx->types[0] = server_ctx.max_num;
+	// ctx->types = malloc((server_ctx.max_num+1) * sizeof(int));
+	// ctx->types[0] = server_ctx.max_num;
 
 	datatype_t * p = (datatype_t *)server_ctx.list_datatypes;	
-	
+
+	// printf("max banks=%d\n", ctx->conf->max_num);
+		
 	while(p) {
-		ctx->types[p->number] = p->type;
-		//printf("init %d:%d [%s] \n", p->number,p->type, p->comment);
+		// ctx->types[p->number] = p->datalen;
+		printf("%s:%d %d:%d [%s] \n", __FUNCTION__,__LINE__, p->number,p->type, p->comment);
 		p = p->next;
 	}	
 	
@@ -406,7 +474,7 @@ int main(int argc, char **argv){
 	int mc_sock;
 	addr_t mc_addr;	
 	ev_io  mc_io;
-	likes_ctx * like_ctx;		
+	sophiadb_t * db;		
 	int c;	
 	
 	
@@ -452,6 +520,7 @@ int main(int argc, char **argv){
 		exit(1);
 	}
 	
+
 	flog =  server_ctx.logfile ? fopen(server_ctx.logfile, "a+") : fopen("error.log", "a+");
 	
 	if (flog) {		
@@ -489,18 +558,18 @@ int main(int argc, char **argv){
 
 	int i=0;
 	while(i < max_clients) {
-		if(clients[i].mc_ctx) 
+		if(clients[i].mc) 
 			printf("init err %i\n", i);
 		i++;
 	}
-	
-	like_ctx = init(&server_ctx);
-	assert(like_ctx);
+		
+	db = db_init(&server_ctx);
+	assert(db);
 	
 	struct ev_loop *loop = ev_default_loop(0);	
 	assert(loop);
 	
-	ev_set_userdata(loop,(void*)like_ctx);	
+	ev_set_userdata(loop,(void*)db);	
 		
 	ev_io_init(  &mc_io, memcached_on_connect, mc_sock, EV_READ);		
 	ev_io_start(loop, &mc_io);
@@ -538,7 +607,7 @@ int main(int argc, char **argv){
 	
 	//ev_loop_destroy(loop);
 	
-	destroy(like_ctx);
+	destroy(db);
 	
 	if (mc_addr.a_addr) free(mc_addr.a_addr);
 	

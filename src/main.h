@@ -38,9 +38,9 @@
 //#include "mqueue.h"
 #include "io_buffer.h"
 
-#define LIKE_CACHESIZE 16777216; 
+#define LIKE_CACHESIZE 			16777216; 
 
-#define MAX_COMMAND_LEN		128
+#define MAX_COMMAND_LEN			128
 
 #define LK_STORAGE_FILENAME  "storage.tch"
 #define LK_STORAGE_FILENAME_LEN  sizeof(LK_STORAGE_FILENAME)
@@ -48,6 +48,7 @@
 
 #define LK_KEYSIZE sizeof(lk_key)
 #define LK_LIKESIZE sizeof(unsigned)
+
 
 // typedef struct {
 // 	unsigned data;

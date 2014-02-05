@@ -2,12 +2,16 @@
 #include "ini.h"
 #include "mc.h"
 
-extern void parse(const char* fname, server_ctx_t *server_ctx);
+extern void parse(const char* fname, conf_t *server_ctx);
 
-int dumper(void* pctx, const char* section, const char* name,
+int parser(void* pctx, const char* section, const char* name,
            const char* value) {
-	server_ctx_t* ctx = (server_ctx_t*) pctx;
+	conf_t* ctx = (conf_t*) pctx;
+	static datatype_t *p = NULL;
+	datatype_t *tmp = NULL;
+
 	int tmp_int = 0;
+	int max_num=0;
 	
     if (strcmp(section, "daemon") == 0) {
 //		printf("[%s] %s=%s;\n", section, name, value);
@@ -51,13 +55,86 @@ int dumper(void* pctx, const char* section, const char* name,
 			ctx->datadir = strdup(value);
 		}
 
+	} else if (strcmp(section, "data") == 0){
+
+		if (strcmp("number", name) == 0) {
+			if(ctx->list_datatypes) {
+				tmp = p;
+				
+				p = malloc(sizeof(datatype_t));
+				if (!p) {
+					(void)fprintf(stderr, "mpool Error : %s\n",	strerror(errno));
+			 	}
+				
+				// printf("alloc %x\n", (unsigned) p);
+				
+				assert(p);				
+				p->next = NULL;
+				p->comment = NULL;
+				tmp->next =  p;//(datatype_t*)
+			} else {				
+
+				p = (datatype_t*) calloc(1, sizeof(datatype_t));
+				// printf("alloc %x\n", (unsigned) p);
+				if (!p) {
+					(void)fprintf(stderr, "mpool Error:%s %s\n", __LINE__,	strerror(errno));
+			 	}
+
+				ctx->list_datatypes = p;
+				assert(ctx->list_datatypes);				
+			}
+			
+			sscanf(value,"%d",&tmp_int);
+			p->number = tmp_int;
+			
+			ctx->list_size++;
+			if (tmp_int > ctx->max_num) 
+				ctx->max_num = tmp_int;
+		}
+
+		assert(p);
+		
+		if(strcmp("comment", name)==0) {
+			
+			p->comment = strdup(value);
+			
+			if (!p->comment) {
+				(void)fprintf(stderr, "mpool Error:%d : %s\n",	__LINE__, strerror(errno));
+		 	}
+		}
+		
+		if(strcmp("datadir", name)==0) {
+			
+			p->datadir = strdup(value);
+			
+			if (!p->datadir) {
+				(void)fprintf(stderr, "mpool Error:%d  %s\n", __LINE__, strerror(errno));
+		 	}
+		}
+
+
+		if(strcmp("type", name)==0) {			
+			if (strcmp("int",value)==0) {
+				p->type = SPHDB_INT;
+			}
+
+			if (strcmp("long",value)==0) {
+				p->type = SPHDB_LONG;
+			}
+
+			if (strcmp("string",value)==0) {
+				p->type = SPHDB_STRING;
+			}
+
+		}
+
 	}
 	
 	return 0;
 }
 
-void parse(const char* fname, server_ctx_t *server_ctx) {
-    bzero(server_ctx, sizeof(server_ctx_t));
-    ini_parse(fname, dumper, (void*)server_ctx);
+void parse(const char* fname, conf_t *server_ctx) {
+    bzero(server_ctx, sizeof(conf_t));
+    ini_parse(fname, parser, (void*)server_ctx);
     
 }

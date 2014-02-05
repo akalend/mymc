@@ -1,12 +1,15 @@
 #include "mc.h"
 
-#ifndef __likes_mc__
-#define __likes_mc__
+#ifndef __sophiadb_mc__
+#define __sophiadb_mc__
 #endif
-#ifdef __likes_mc__
+#ifdef __sophiadb_mc__
+
+#include <sophia.h>
 
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <ev.h>
 #define BUFSIZE 512
 
 //TODO nax...
@@ -40,7 +43,7 @@ extern 	 struct {
 void periodic_watcher(EV_P_ ev_timer *t, int revents);
 static ev_io* memcached_client_new(int sock);
 static void memcached_client(EV_P_ ev_io *io, int revents);
-static void memcached_client_free(memcache_ctx *ctx);
+static void memcached_client_free(db_t *ctx);
 static int setup_socket(int sock);
 
 int num_digits(unsigned x)  
@@ -67,17 +70,17 @@ void close_io(EV_P_ ev_io *io)
 void close_all(EV_P) {
 	int i;
 	for (i=0; i < max_clients; i++) {
-		if (clients[i].flags & FD_ACTIVE) {
+		if (clients[i].flags ) {
 			close_io(EV_A_ clients[i].io);
 		}
 
-		if(clients[i].mc_ctx) {
-			if(clients[i].mc_ctx->value)
-				free(clients[i].mc_ctx->value);
-			clients[i].mc_ctx->value = NULL;
+		if(clients[i].mc) {
+			if(clients[i].mc->value)
+				free(clients[i].mc->value);
+			clients[i].mc->value = NULL;
 		
-			free(clients[i].mc_ctx);
-			clients[i].mc_ctx = NULL;
+			free(clients[i].mc);
+			clients[i].mc = NULL;
 		}
 	}
 }
@@ -86,13 +89,13 @@ void cllear_mc_all()
 {
 	int i;
 	for (i=0; i < max_clients; i++) {
-		if (clients[i].mc_ctx) {
-			if (clients[i].mc_ctx->value) {
-				free(clients[i].mc_ctx->value);
-				clients[i].mc_ctx->value = NULL;
+		if (clients[i].mc) {
+			if (clients[i].mc->value) {
+				free(clients[i].mc->value);
+				clients[i].mc->value = NULL;
 			}	
-			free(clients[i].mc_ctx);
-			clients[i].mc_ctx = NULL;
+			free(clients[i].mc);
+			clients[i].mc = NULL;
 		}
 		//if(FD_ACTIVE) close_io(EV_A_ clients[i].io);
 	}
@@ -129,7 +132,7 @@ setup_socket(int sock)
 }
 
 static void
-memcached_client_free(memcache_ctx *ctx)
+memcached_client_free(db_t *ctx)
 {
 	stats.connections--;	
 	if(is_trace)
@@ -137,26 +140,24 @@ memcached_client_free(memcache_ctx *ctx)
 
 	if (!ctx) return;
 
-	if (ctx->value) free(ctx->value);
-	free(ctx);
-	clients[ctx->io.fd].mc_ctx = NULL;
+	// if (ctx->value) free(ctx->value);
+	// free(ctx);
+	// clients[ctx->io.fd].mc = NULL;
 }
 
 /*process data for set*/
 static int 
-memcached_process_set( memcache_ctx *mctx, likes_ctx* ctx) {
+memcached_process_set( db_t *mctx, sophiadb_t* ctx) {
 
-	TCHDB *hdb = ctx->hdb;
-	
-	if ( !tchdbput2(hdb, mctx->key, mctx->value) ) {
-		ctx->ecode = tchdbecode(hdb);
-		fprintf(flog, "res=set tcdb error[%d]: %s\n",ctx->ecode, tchdberrmsg(ctx->ecode));
+	printf("save[len=%d] %s:%s\n",strlen(mctx->value),  mctx->key, mctx->value);
+	int rc = sp_set(ctx->db, &mctx->key, strlen(mctx->key), mctx->value, sizeof(mctx->value));
+	if (rc == -1) {
+		printf("sp_set: %s\n", sp_error(ctx->db));
 		return 1;
 	}
 	
-	free(mctx->key);
-	mctx->key = NULL;
 	memset(mctx->value, BUFSIZE, '\0');
+	memset(mctx->key, BUFSIZE, '\0');
 	
 	stats.set ++;
 	return 0;
@@ -166,10 +167,10 @@ memcached_process_set( memcache_ctx *mctx, likes_ctx* ctx) {
 static void 
 memcached_cb_set(EV_P_ ev_io *io, int revents) {
 
-	memcache_ctx *mctx = (memcache_ctx*)io;
+	db_t *mctx = (db_t*)io;
 
 	if(is_trace) 
-		printf("\n--------  data len=%d -----------\n'%s'\n", mctx->value_len, mctx->value);
+		printf("\n--------  data len=%d -----------\n'%s'\n", mctx->value_size - mctx->value_len, mctx->value);
 
 	while (mctx->value_len < mctx->value_size) {
 		size_t bytes = read(io->fd, mctx->value + mctx->value_len, mctx->value_size - mctx->value_len);
@@ -189,7 +190,7 @@ memcached_cb_set(EV_P_ ev_io *io, int revents) {
 	set_client_timeout(io, RECV_TIMEOUT);
 	mctx->value[mctx->value_size-2] = 0;
 	
-	likes_ctx* ctx = ev_userdata(EV_A);	
+	sophiadb_t* ctx = ev_userdata(EV_A);	
 	int ret = memcached_process_set(mctx, ctx);
 				
 	switch (ret) {
@@ -211,10 +212,6 @@ memcached_cb_set(EV_P_ ev_io *io, int revents) {
 
 error:
 	mctx->cmd_len = 0;
-	if(mctx->key) {
-		free(mctx->key);
-		mctx->key = NULL;
-	}
 
 	ev_io_stop(EV_A_ io);
 	ev_set_cb(io, memcached_client);
@@ -225,10 +222,6 @@ error:
 
 notstored:
 	mctx->cmd_len = 0;
-	if(mctx->key) {
-		free(mctx->key);
-		mctx->key = NULL;
-	}
 	ev_io_stop(EV_A_ io);
 	ev_set_cb(io, memcached_client);
 	ev_io_set(io, io->fd, EV_WRITE);
@@ -237,16 +230,12 @@ notstored:
 	return;
 
 disconnect:	
-	if(mctx->key) {
-		free(mctx->key);
-		mctx->key = NULL;
-	}
 	close_io(EV_A_ io);	
 	return;	
 }
 
 /* memcache GET handler */
-int memcache_get(EV_P_  memcache_ctx *mctx) {
+int memcache_get(EV_P_  db_t *mctx) {
 	int len=0;
 	char *key = mctx->cmd + 4;
 	char *p = key;
@@ -259,24 +248,28 @@ int memcache_get(EV_P_  memcache_ctx *mctx) {
 	
 	*(key+len-1) = '\0';
 
-	likes_ctx* ctx = ev_userdata(EV_A);		
+	sophiadb_t* ctx = ev_userdata(EV_A);		
 	memset(mctx->value, BUFSIZE, '\0');
+
+	printf("key: %s\n", key);
 	
-	TCHDB *hdb = ctx->hdb;
+	char* pdata = NULL;
+	size_t valuesize;
 
-	void * pdata = tchdbget2(hdb, key);	
-	if(!pdata) {
-		ctx->ecode = tchdbecode(hdb);
-		if (ctx->ecode == TCENOREC) goto end; 		//no record found = 22
-
-		fprintf( flog, "%s, get tcdb error: %s (%d)\n", __FUNCTION__, tchdberrmsg(ctx->ecode), ctx->ecode );
+	int rc = sp_get(ctx->db, key, len-1, &pdata, &valuesize);
+	if (rc == -1) {
+		printf("sp_get: %s\n", sp_error(ctx->db));
 		goto error;
 	}
-	
-	len = snprintf(mctx->value, BUFSIZE, "VALUE %s 0 %d\r\n%s\r\nEND\r\n", key, (int)strlen(pdata), (char*)pdata );
-	
 
+	printf("key[%d]: '%s', len=%d value='%s'\n", len,key, valuesize,  pdata);
+	
+	free(pdata);
+
+	len = snprintf(mctx->value, BUFSIZE, "VALUE %s 0 %d\r\n%s\r\nEND\r\n", key, valuesize, pdata);
+	
 	if (pdata) free(pdata);
+
 	obuffer_init(&mctx->response, mctx->value, len);
 	
 	stats.get ++;
@@ -292,7 +285,7 @@ end:
 
 
 /* memcache DELETE handler */
-int memcache_del(EV_P_  memcache_ctx *mctx) {
+int memcache_del(EV_P_  db_t *mctx) {
 	int len;
 	char  *key = mctx->cmd + 7;
 	char *p=key;
@@ -304,27 +297,27 @@ int memcache_del(EV_P_  memcache_ctx *mctx) {
 	}
 	
 	*(key+len-1) = '\0';
-	likes_ctx* ctx = ev_userdata(EV_A);	
+	sophiadb_t* ctx = ev_userdata(EV_A);	
 
 	memset(mctx->value, BUFSIZE, '\0');
 	
-	ctx->ecode = 0;
-	bool res = tchdbout2(ctx->hdb, key);
-	if (res) {
-		len=9;
-		strcpy(mctx->value, "DELETED\r\n" );		
-	} else {
-		ctx->ecode = tchdbecode(ctx->hdb);
-		if (ctx->ecode == TCENOREC) {
-			len=11;
-			stats.miss ++;
-			strcpy(mctx->value, "NOT_FOUND\r\n" );	
+	// ctx->ecode = 0;
+	// bool res = tchdbout2(ctx->hdb, key);
+	// if (res) {
+	// 	len=9;
+	// 	strcpy(mctx->value, "DELETED\r\n" );		
+	// } else {
+	// 	ctx->ecode = tchdbecode(ctx->hdb);
+	// 	if (ctx->ecode == TCENOREC) {
+	// 		len=11;
+	// 		stats.miss ++;
+	// 		strcpy(mctx->value, "NOT_FOUND\r\n" );	
 			
-		} else 	{	
-			fprintf(flog, "res=false delete tcdb error[%d]: %s\n",ctx->ecode, tchdberrmsg(ctx->ecode));
-			goto error;
-		}
-	}
+	// 	} else 	{	
+	// 		fprintf(flog, "res=false delete tcdb error[%d]: %s\n",ctx->ecode, tchdberrmsg(ctx->ecode));
+	// 		goto error;
+	// 	}
+	// }
 	
 	mctx->value[len] = '\0';
 	obuffer_init(&mctx->response, mctx->value, len);
@@ -338,23 +331,21 @@ error:
 
 
 /* memcache SET handler */
-int memcache_set(EV_P_  memcache_ctx *mctx, int readed, int  end) {
-	unsigned flags, exptime, bytes;
+int memcache_set(EV_P_  db_t *mctx, int readed, int  end) {
+
 	/* Set command */
+	unsigned  bytes;
 	char *p;	
 	p = mctx->cmd + 4;
 
-	char* key = malloc(BUFSIZE);
-	if (sscanf(p, "%s %u %u %u", key, &flags, &exptime, &bytes) != 4) {
+	*(mctx->key) = '\0';
+	
+	if (sscanf(p, "%s %u %u %u", &mctx->key, &mctx->flag, &mctx->exptime, &bytes) != 4) {
 		fprintf(flog, "%s[%d] sscanf error\n", __FUNCTION__,__LINE__);
-		free(key);	
 		return 1;
 	}
 
-	mctx->flag = flags;
-	mctx->exptime = exptime;
 	int len = mctx->cmd_len - end;
-	mctx->key = key;
 
 	/* Don't send messages longer than 1 megabyte */
 	if (!bytes || bytes > 1 << 20) {
@@ -374,17 +365,13 @@ int memcache_set(EV_P_  memcache_ctx *mctx, int readed, int  end) {
 			
 		memcpy(mctx->value,mctx->cmd+end, readed-end);
 		mctx->value[readed-end] = '\0';
-		likes_ctx* ctx = ev_userdata(EV_A);	
+		sophiadb_t* ctx = ev_userdata(EV_A);	
 
 		if(memcached_process_set(mctx, ctx)) {
-			mctx->key = NULL;
-			free(key);
 			return 1;
 		}
 
 		obuffer_init(&mctx->response, "STORED\r\n", sizeof("STORED\r\n") - 1);
-		mctx->key = NULL;
-		free(key);
 		return 0;
 	}
 	
@@ -398,14 +385,11 @@ int memcache_set(EV_P_  memcache_ctx *mctx, int readed, int  end) {
 			//mctx->value = NULL;
 			obuffer_init(&mctx->response, "STORED\r\n", sizeof("STORED\r\n") - 1);
 			stats.err ++;
-			mctx->key = NULL;
-			free(key);
-			
+			*(mctx->key) = '\0';
 			return 0;
 		}
 
-		mctx->key = NULL;
-		free(key);
+		*(mctx->key) = '\0';
 		return 1;
 	}
 	
@@ -416,7 +400,7 @@ int memcache_set(EV_P_  memcache_ctx *mctx, int readed, int  end) {
 }
 
 static void 
-memcached_stats(EV_P_ memcache_ctx *mctx) {
+memcached_stats(EV_P_ db_t *mctx) {
 			int len;
 			char *statsbuf = malloc(BUFSIZE);
 
@@ -450,7 +434,7 @@ memcached_stats(EV_P_ memcache_ctx *mctx) {
 static void
 memcached_client(EV_P_ ev_io *io, int revents) {
 	
-	memcache_ctx *mctx = ( memcache_ctx*)io;
+	db_t *mctx = ( db_t*)io;
 	if (revents & EV_READ) {
 		int end = 0;
 		int i = mctx->cmd_len ? mctx->cmd_len - 1 : 0;
@@ -525,8 +509,8 @@ memcached_client(EV_P_ ev_io *io, int revents) {
 				goto send_reply;				
 
 		} else if (strncmp(mctx->cmd, "flush_all", 9) == 0) {
-			likes_ctx* ctx = ev_userdata(EV_A);	
-			if(tchdbvanish(ctx->hdb)) {
+			sophiadb_t* ctx = ev_userdata(EV_A);	
+			if(true) { //tchdbvanish(ctx->hdb)
 				obuffer_init(&mctx->response, "OK\r\n", sizeof("OK\r\n") - 1);
 
 				stats.inc = stats.rps_peak = stats.rps = stats.cmd_count = stats.get = stats.set = stats.del = stats.miss = stats.err = 0;
@@ -605,29 +589,40 @@ memcached_client_new(int sock) {
 		printf("%s: new connection [%d]", __FUNCTION__, sock);
 
 	if (setup_socket(sock) != -1) {
-		memcache_ctx *mctx = calloc(1, sizeof(memcache_ctx));
+		db_t *mctx = calloc(1, sizeof(db_t));
 
 		if (!mctx) {
-			fprintf(flog, "%s: allocate error size=%d\n", __FUNCTION__, (int)sizeof(memcache_ctx));
+			fprintf(flog, "%s: allocate error size=%d\n", __FUNCTION__, (int)sizeof(db_t));
 			return NULL;
 		}
-		
-		mctx->value = malloc(BUFSIZE);		
+
 		if (!mctx->value) {
+			mctx->value = malloc(BUFSIZE);		
+			if (!mctx->value) {
+				fprintf(flog, "%s: allocate error size=%d\n", __FUNCTION__, BUFSIZE);
+				return NULL;
+			}
+		}
+
+
+	if (!mctx->key) {
+		mctx->key = malloc(BUFSIZE);
+		if (!mctx->key) {
 			fprintf(flog, "%s: allocate error size=%d\n", __FUNCTION__, BUFSIZE);
 			return NULL;
 		}
+	}
 
-		ev_io_init(&mctx->io, memcached_client, sock, EV_READ);
-		clients[sock].io = &mctx->io;
-		clients[sock].flags = FD_ACTIVE;
-		clients[sock].cleanup = (cleanup_proc)memcached_client_free;
-		clients[sock].mc_ctx = mctx;
 
-		stats.connections++;
-		stats.cnn_count++;
-		if(is_trace)
-			printf(" Ok\n");
+	ev_io_init(&mctx->io, memcached_client, sock, EV_READ);
+	clients[sock].io = &mctx->io;
+	clients[sock].cleanup = (cleanup_proc)memcached_client_free;
+	clients[sock].mc = mctx;
+
+	stats.connections++;
+	stats.cnn_count++;
+	if(is_trace)
+		printf(" Ok\n");
 		return &mctx->io;
 	} else {
 		if(is_trace)
